@@ -204,6 +204,7 @@ const (
 	objectRetentionKey  = "object-retention"
 	objectLegalHoldKey  = "object-legal-hold"
 	corskey             = "cors"
+	lifecyclekey        = "lifecycle"
 	websitekey          = "website"
 	versioningKey       = "versioning"
 	deleteMarkerKey     = "delete-marker"
@@ -7915,6 +7916,73 @@ func (p *Posix) DeleteBucketCors(ctx context.Context, bucket string) error {
 		return s3err.GetBucketErr(s3err.ErrInvalidBucketName, bucket)
 	}
 	return p.PutBucketCors(ctx, bucket, nil)
+}
+
+func (p *Posix) PutBucketLifecycleConfiguration(ctx context.Context, bucket string, config []byte) (err error) {
+	defer backend.MapPermissionErr(&err)
+
+	release, err := p.acquireActionSlot(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	if !p.isBucketValid(bucket) {
+		return s3err.GetBucketErr(s3err.ErrInvalidBucketName, bucket)
+	}
+	err = p.doesBucketExist(bucket)
+	if err != nil {
+		return err
+	}
+
+	if config == nil {
+		err = p.meta.DeleteAttribute(bucket, "", lifecyclekey)
+		if err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
+			return fmt.Errorf("remove lifecycle: %w", err)
+		}
+
+		return nil
+	}
+
+	err = p.meta.StoreAttribute(nil, bucket, "", lifecyclekey, config)
+	if err != nil {
+		return fmt.Errorf("set lifecycle: %w", err)
+	}
+
+	return nil
+}
+
+func (p *Posix) GetBucketLifecycleConfiguration(ctx context.Context, bucket string) ([]byte, error) {
+	release, err := p.acquireActionSlot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	if !p.isBucketValid(bucket) {
+		return nil, s3err.GetBucketErr(s3err.ErrInvalidBucketName, bucket)
+	}
+	err = p.doesBucketExist(bucket)
+	if err != nil {
+		return nil, err
+	}
+
+	config, err := p.meta.RetrieveAttribute(nil, bucket, "", lifecyclekey)
+	if errors.Is(err, meta.ErrNoSuchKey) {
+		return nil, s3err.GetBucketErr(s3err.ErrNoSuchLifecycleConfiguration, bucket)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return config, nil
+}
+
+func (p *Posix) DeleteBucketLifecycle(ctx context.Context, bucket string) error {
+	if !p.isBucketValid(bucket) {
+		return s3err.GetBucketErr(s3err.ErrInvalidBucketName, bucket)
+	}
+	return p.PutBucketLifecycleConfiguration(ctx, bucket, nil)
 }
 
 func (p *Posix) PutBucketWebsite(ctx context.Context, bucket string, website []byte) (err error) {
