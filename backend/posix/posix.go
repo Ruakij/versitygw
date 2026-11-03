@@ -162,6 +162,11 @@ type Posix struct {
 	// per-bucket lock files by lockObjectPublish. Channels make local lock
 	// acquisition cancelable while avoiding filesystem lock thrash.
 	objLockSlots [objLockShards]chan struct{}
+
+	// stopMigration cancels the delete marker migration started by New and
+	// migrationDone is closed when it has returned.
+	stopMigration context.CancelFunc
+	migrationDone chan struct{}
 }
 
 func (o *PosixOpts) SetNewDirPerm(perm fs.FileMode) {
@@ -498,6 +503,7 @@ func New(rootdir string, ms meta.MetadataStorer, opts PosixOpts) (*Posix, error)
 		p.Shutdown()
 		return nil, err
 	}
+	p.startDeleteMarkerMigration()
 	return p, nil
 }
 
@@ -609,6 +615,10 @@ func isDirBelowRoot(root, dir string) bool {
 }
 
 func (p *Posix) Shutdown() {
+	if p.stopMigration != nil {
+		p.stopMigration()
+		<-p.migrationDone
+	}
 	p.rootfd.Close()
 }
 
