@@ -35,6 +35,7 @@ import (
 	"github.com/versity/versitygw/auth"
 	"github.com/versity/versitygw/backend"
 	"github.com/versity/versitygw/backend/meta"
+	"github.com/versity/versitygw/backend/posix"
 	"github.com/versity/versitygw/s3api/utils"
 	"github.com/versity/versitygw/s3err"
 	"github.com/versity/versitygw/s3event"
@@ -133,6 +134,46 @@ every byte of every object is read and hashed. Tune --concurrency and
 						Usage:       "per file read buffer size in bytes used for ETag and checksum calculation; peak buffer memory is concurrency * read-buffer-size",
 						Value:       datasetDefaultReadBufferSize,
 						DefaultText: "1048576",
+					},
+				},
+			},
+			{
+				Name:    "truncate-delete-markers",
+				Aliases: []string{"tdm"},
+				Usage:   "Truncate the delete markers of a posix gateway that still hold the content of the object they hide.",
+				Description: `Walks the buckets of the posix root directory and the versioning directory,
+and truncates every delete marker file with content to 0 bytes. Delete markers
+created by versions of the gateway before they were emptied keep the full
+content of the object they hide, which is also kept in the versioning directory.
+
+A delete marker is truncated only if the versioning directory holds another
+version of the same key that is not a delete marker and has the size of the
+marker. The other markers are left as is and reported with the reason.
+
+Use the same --versioning-dir and, if set, --sidecar-dir as the gateway. The
+command can run while the gateway is running. With --dry-run nothing is
+written, and the output shows what would be truncated.
+
+The command exits with a non-zero status if a file could not be processed.`,
+				Action: truncateDeleteMarkers,
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:     "posix-root-dir",
+						Usage:    "the posix gateway root directory",
+						Required: true,
+					},
+					&cli.StringFlag{
+						Name:     "versioning-dir",
+						Usage:    "the versioning directory of the gateway",
+						Required: true,
+					},
+					&cli.StringFlag{
+						Name:  "sidecar-dir",
+						Usage: "the sidecar directory the gateway stores metadata in instead of extended attributes",
+					},
+					&cli.BoolFlag{
+						Name:  "dry-run",
+						Usage: "report the delete markers that would be truncated without changing anything",
 					},
 				},
 			},
@@ -310,6 +351,85 @@ func convertXattrMetadata(ctx *cli.Context) error {
 	return nil
 }
 
+func truncateDeleteMarkers(ctx *cli.Context) error {
+	root, err := filepath.Abs(ctx.String("posix-root-dir"))
+	if err != nil {
+		return fmt.Errorf("resolve posix root directory: %w", err)
+	}
+	fi, err := os.Stat(root)
+	if err != nil {
+		return fmt.Errorf("stat posix root directory: %w", err)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("posix root %q is not a directory", root)
+	}
+
+	versioningDir, err := filepath.Abs(ctx.String("versioning-dir"))
+	if err != nil {
+		return fmt.Errorf("resolve versioning directory: %w", err)
+	}
+	fi, err = os.Stat(versioningDir)
+	if err != nil {
+		return fmt.Errorf("stat versioning directory: %w", err)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("versioning directory %q is not a directory", versioningDir)
+	}
+	rel, err := filepath.Rel(root, versioningDir)
+	if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return errors.New("versioning directory cannot be inside the posix root directory")
+	}
+
+	ms, err := posixMetaStorer(root, ctx.String("sidecar-dir"))
+	if err != nil {
+		return err
+	}
+
+	dryRun := ctx.Bool("dry-run")
+	verb := "truncated"
+	if dryRun {
+		verb = "would be truncated"
+	}
+
+	res, err := posix.TruncateDeleteMarkers(ctx.Context, posix.TruncateDeleteMarkersOpts{
+		Root:          root,
+		VersioningDir: versioningDir,
+		Meta:          ms,
+		DryRun:        dryRun,
+		Skipped: func(path, reason string) {
+			fmt.Printf("skipping %s: %s\n", path, reason)
+		},
+		Failed: func(path string, err error) {
+			fmt.Fprintf(os.Stderr, "error: %s: %v\n", path, err)
+		},
+	})
+
+	status := "is finished"
+	if errors.Is(err, context.Canceled) {
+		status = "was interrupted"
+	} else if err != nil {
+		status = "failed"
+	}
+	fmt.Printf("delete marker truncation %s:\n"+
+		"  posix root directory: %s\n"+
+		"  versioning directory: %s\n"+
+		"  delete markers %s: %d (%d bytes)\n",
+		status, root, versioningDir, verb, res.Truncated.Count, res.Truncated.Bytes)
+	for _, reason := range []string{posix.SkipNoVersions, posix.SkipNoMatchingVersion} {
+		fmt.Printf("  delete markers skipped, %s: %d (%d bytes)\n",
+			reason, res.Skipped[reason].Count, res.Skipped[reason].Bytes)
+	}
+	fmt.Printf("  errors: %d\n", res.Errors)
+
+	if err != nil {
+		return err
+	}
+	if res.Errors > 0 {
+		return cli.Exit(fmt.Sprintf("delete marker truncation finished with %d errors", res.Errors), 1)
+	}
+	return nil
+}
+
 // Metadata attribute names and reserved directories
 const (
 	datasetACLKey       = "acl"
@@ -390,27 +510,9 @@ func convertPosixDataset(ctx *cli.Context) error {
 		}
 	}
 
-	var ms meta.MetadataStorer
-	if sidecarDir := ctx.String("sidecar-dir"); sidecarDir != "" {
-		sidecarDir, err = filepath.Abs(sidecarDir)
-		if err != nil {
-			return fmt.Errorf("resolve sidecar directory: %w", err)
-		}
-		rel, err := filepath.Rel(root, sidecarDir)
-		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return errors.New("sidecar directory cannot be inside the posix root directory")
-		}
-		sc, err := meta.NewSideCar(sidecarDir)
-		if err != nil {
-			return fmt.Errorf("init sidecar metadata: %w", err)
-		}
-		ms = sc
-	} else {
-		xm := meta.XattrMeta{}
-		if err := xm.Test(root); err != nil {
-			return fmt.Errorf("xattr check failed: %w", err)
-		}
-		ms = xm.WithRootDir(root)
+	ms, err := posixMetaStorer(root, ctx.String("sidecar-dir"))
+	if err != nil {
+		return err
 	}
 
 	acl, err := auth.UpdateACL(&auth.PutBucketAclInput{
@@ -459,6 +561,33 @@ func convertPosixDataset(ctx *cli.Context) error {
 		return cli.Exit(fmt.Sprintf("posix dataset conversion finished with %d errors", n), 1)
 	}
 	return nil
+}
+
+// posixMetaStorer returns the metadata storer of the posix gateway with the
+// given root directory: the sidecar directory if set, otherwise extended
+// attributes.
+func posixMetaStorer(root, sidecarDir string) (meta.MetadataStorer, error) {
+	if sidecarDir == "" {
+		xm := meta.XattrMeta{}
+		if err := xm.Test(root); err != nil {
+			return nil, fmt.Errorf("xattr check failed: %w", err)
+		}
+		return xm.WithRootDir(root), nil
+	}
+
+	sidecarDir, err := filepath.Abs(sidecarDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve sidecar directory: %w", err)
+	}
+	rel, err := filepath.Rel(root, sidecarDir)
+	if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, errors.New("sidecar directory cannot be inside the posix root directory")
+	}
+	sc, err := meta.NewSideCar(sidecarDir)
+	if err != nil {
+		return nil, fmt.Errorf("init sidecar metadata: %w", err)
+	}
+	return sc, nil
 }
 
 func (c *datasetConverter) run(ctx context.Context) error {

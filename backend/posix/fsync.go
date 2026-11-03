@@ -70,3 +70,31 @@ func (tmp *tmpfile) syncNamespace() error {
 		dir = parent
 	}
 }
+
+// syncObjVersion flushes the object version at versionPath and the directory
+// entries that publish it: its directory and each parent up to and including
+// versionBucket. It is used where the version holds the only other copy of
+// data that is about to be removed, regardless of the Fsync option.
+func syncObjVersion(versionPath, versionBucket string) error {
+	f, err := os.Open(versionPath)
+	if err != nil {
+		return fmt.Errorf("open object version: %w", err)
+	}
+	defer f.Close()
+	if err := syncFile(f); err != nil {
+		return fmt.Errorf("fsync object version: %w", err)
+	}
+
+	stop := filepath.Clean(versionBucket)
+	dir := filepath.Dir(versionPath)
+	for {
+		if err := syncDir(dir); err != nil {
+			return fmt.Errorf("fsync directory %q: %w", dir, err)
+		}
+		parent := filepath.Dir(dir)
+		if dir == stop || parent == dir {
+			return nil
+		}
+		dir = parent
+	}
+}

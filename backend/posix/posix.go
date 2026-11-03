@@ -5348,6 +5348,39 @@ func (p *Posix) putObjectLockSettings(ctx context.Context, po s3response.PutObje
 	return err
 }
 
+// emptyDeleteMarker truncates the delete marker file at objpath, which fi
+// described before it was marked. A file that has been replaced since is left
+// as is. Entries the gateway can't write to keep their data, as the marker
+// works with it.
+func (p *Posix) emptyDeleteMarker(objpath string, fi fs.FileInfo) error {
+	if fi.IsDir() || fi.Size() == 0 {
+		return nil
+	}
+
+	f, err := os.OpenFile(objpath, os.O_WRONLY, 0)
+	if errors.Is(err, fs.ErrNotExist) || isErrNotDir(err) || errors.Is(err, fs.ErrPermission) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	cur, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(fi, cur) {
+		return nil
+	}
+
+	err = f.Truncate(0)
+	if errors.Is(err, fs.ErrPermission) {
+		return nil
+	}
+	return err
+}
+
 func (p *Posix) DeleteObject(ctx context.Context, input *s3.DeleteObjectInput) (_ *s3.DeleteObjectOutput, err error) {
 	defer backend.MapPermissionErr(&err)
 
@@ -5459,9 +5492,18 @@ func (p *Posix) DeleteObject(ctx context.Context, input *s3.DeleteObjectInput) (
 
 			// Creates a new object version in the versioning directory
 			if p.isBucketVersioningEnabled(vStatus) || string(vId) != nullVersionId {
-				_, err = p.createObjVersion(bucket, object, fi.Size(), acct, true)
+				versionPath, err := p.createObjVersion(bucket, object, fi.Size(), acct, true)
 				if err != nil {
 					return nil, err
+				}
+
+				// The marker is emptied, so the version holds the only copy
+				// of the data: it has to be durable before that.
+				if !fi.IsDir() && !p.fsync {
+					err = syncObjVersion(versionPath, filepath.Join(p.versioningDir, bucket))
+					if err != nil {
+						return nil, err
+					}
 				}
 			}
 
@@ -5484,6 +5526,14 @@ func (p *Posix) DeleteObject(ctx context.Context, input *s3.DeleteObjectInput) (
 				if err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
 					return nil, fmt.Errorf("delete versionId: %w", err)
 				}
+			}
+
+			// A delete marker has no content: the data lives on in the
+			// version copy. This follows the marker attribute, so that a
+			// crash never leaves a live empty object.
+			err = p.emptyDeleteMarker(objpath, fi)
+			if err != nil {
+				return nil, fmt.Errorf("empty delete marker: %w", err)
 			}
 
 			// The delete marker is last modified when it's created, not
