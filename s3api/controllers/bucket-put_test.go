@@ -1442,3 +1442,89 @@ func TestS3ApiController_PutBucketWebsite(t *testing.T) {
 		})
 	}
 }
+
+func TestS3ApiController_PutBucketLifecycleConfiguration(t *testing.T) {
+	days := int32(30)
+	validBody, err := xml.Marshal(s3response.LifecycleConfiguration{
+		Rules: []s3response.LifecycleRule{
+			{
+				Status:     "Enabled",
+				Filter:     &s3response.LifecycleFilter{},
+				Expiration: &s3response.LifecycleExpiration{Days: &days},
+			},
+		},
+	})
+	assert.NoError(t, err)
+
+	noActionBody, err := xml.Marshal(s3response.LifecycleConfiguration{
+		Rules: []s3response.LifecycleRule{{Status: "Enabled", Filter: &s3response.LifecycleFilter{}}},
+	})
+	assert.NoError(t, err)
+
+	tests := []struct {
+		name   string
+		input  testInput
+		output testOutput
+	}{
+		{
+			name:  "verify access fails",
+			input: testInput{locals: accessDeniedLocals},
+			output: testOutput{
+				response: &Response{MetaOpts: &MetaOptions{BucketOwner: "root"}},
+				err:      s3err.GetAPIError(s3err.ErrAccessDenied),
+			},
+		},
+		{
+			name:  "invalid request body",
+			input: testInput{locals: defaultLocals, body: []byte("invalid_body")},
+			output: testOutput{
+				response: &Response{MetaOpts: &MetaOptions{BucketOwner: "root"}},
+				err:      s3err.GetAPIError(s3err.ErrMalformedXML),
+			},
+		},
+		{
+			name:  "invalid lifecycle config",
+			input: testInput{locals: defaultLocals, body: noActionBody},
+			output: testOutput{
+				response: &Response{MetaOpts: &MetaOptions{BucketOwner: "root"}},
+				err:      s3err.GetAPIError(s3err.ErrMalformedXML),
+			},
+		},
+		{
+			name:  "backend error",
+			input: testInput{locals: defaultLocals, body: validBody, beErr: s3err.GetAPIError(s3err.ErrNotImplemented)},
+			output: testOutput{
+				response: &Response{MetaOpts: &MetaOptions{BucketOwner: "root"}},
+				err:      s3err.GetAPIError(s3err.ErrNotImplemented),
+			},
+		},
+		{
+			name:  "success",
+			input: testInput{locals: defaultLocals, body: validBody},
+			output: testOutput{
+				response: &Response{MetaOpts: &MetaOptions{BucketOwner: "root"}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			be := &BackendMock{
+				PutBucketLifecycleConfigurationFunc: func(contextMoqParam context.Context, bucket string, config []byte) error {
+					return tt.input.beErr
+				},
+				GetBucketPolicyFunc: func(contextMoqParam context.Context, bucket string) ([]byte, error) {
+					return nil, s3err.GetAPIError(s3err.ErrAccessDenied)
+				},
+			}
+
+			ctrl := S3ApiController{be: be}
+
+			testController(t, ctrl.PutBucketLifecycleConfiguration, tt.output.response, tt.output.err, ctxInputs{
+				locals:  tt.input.locals,
+				body:    tt.input.body,
+				headers: tt.input.headers,
+			})
+		})
+	}
+}

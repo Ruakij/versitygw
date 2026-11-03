@@ -188,6 +188,7 @@ const (
 	ErrMissingCORSOrigin
 	ErrCORSIsNotEnabled
 	ErrNoSuchWebsiteConfiguration
+	ErrNoSuchLifecycleConfiguration
 	ErrInvalidWebsiteRedirectProtocol
 	ErrInvalidRedirectLocation
 	ErrBothReplaceKeyAndPrefix
@@ -705,6 +706,11 @@ var errorCodeResponse = map[ErrorCode]APIError{
 		Description:    "The specified bucket does not have a website configuration",
 		HTTPStatusCode: http.StatusNotFound,
 	},
+	ErrNoSuchLifecycleConfiguration: {
+		Code:           "NoSuchLifecycleConfiguration",
+		Description:    "The lifecycle configuration does not exist",
+		HTTPStatusCode: http.StatusNotFound,
+	},
 	ErrInvalidWebsiteRedirectProtocol: {
 		Code:           "InvalidRequest",
 		Description:    "Invalid protocol, protocol can be http or https. If not defined the protocol will be selected automatically.",
@@ -909,6 +915,16 @@ func writeHTMLErrorField(builder *strings.Builder, name string, value any) {
 	builder.WriteString(": ")
 	builder.WriteString(html.EscapeString(fmt.Sprint(value)))
 	builder.WriteString("</li>\n")
+}
+
+// GetLifecycleInvalidRequestErr returns the InvalidRequest error for a
+// lifecycle configuration that is well-formed but not acceptable.
+func GetLifecycleInvalidRequestErr(description string) APIError {
+	return APIError{
+		Code:           "InvalidRequest",
+		Description:    description,
+		HTTPStatusCode: http.StatusBadRequest,
+	}
 }
 
 // Returns invalid checksum error with the provided header in the error description

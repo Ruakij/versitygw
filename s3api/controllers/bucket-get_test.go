@@ -1691,3 +1691,78 @@ func TestS3ApiController_GetBucketLocation(t *testing.T) {
 		})
 	}
 }
+
+func TestS3ApiController_GetBucketLifecycleConfiguration(t *testing.T) {
+	days := int32(30)
+	config := &s3response.LifecycleConfiguration{
+		XMLName: xml.Name{Local: "LifecycleConfiguration"},
+		Rules: []s3response.LifecycleRule{
+			{
+				Status:     "Enabled",
+				Filter:     &s3response.LifecycleFilter{},
+				Expiration: &s3response.LifecycleExpiration{Days: &days},
+			},
+		},
+	}
+	beRes, err := xml.Marshal(config)
+	assert.NoError(t, err)
+
+	var nilResp *s3response.LifecycleConfiguration
+
+	tests := []struct {
+		name   string
+		input  testInput
+		output testOutput
+	}{
+		{
+			name:  "verify access fails",
+			input: testInput{locals: accessDeniedLocals},
+			output: testOutput{
+				response: &Response{MetaOpts: &MetaOptions{BucketOwner: "root"}},
+				err:      s3err.GetAPIError(s3err.ErrAccessDenied),
+			},
+		},
+		{
+			name:  "backend returns error",
+			input: testInput{locals: defaultLocals, beRes: []byte{}, beErr: s3err.GetAPIError(s3err.ErrNoSuchLifecycleConfiguration)},
+			output: testOutput{
+				response: &Response{MetaOpts: &MetaOptions{BucketOwner: "root"}},
+				err:      s3err.GetAPIError(s3err.ErrNoSuchLifecycleConfiguration),
+			},
+		},
+		{
+			name:  "invalid data from backend",
+			input: testInput{locals: defaultLocals, beRes: []byte("invalid_data")},
+			output: testOutput{
+				response: &Response{Data: nilResp, MetaOpts: &MetaOptions{BucketOwner: "root"}},
+				err:      errors.New("failed to parse lifecycle config:"),
+			},
+		},
+		{
+			name:  "successful response",
+			input: testInput{locals: defaultLocals, beRes: beRes},
+			output: testOutput{
+				response: &Response{Data: config, MetaOpts: &MetaOptions{BucketOwner: "root"}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			be := &BackendMock{
+				GetBucketLifecycleConfigurationFunc: func(contextMoqParam context.Context, bucket string) ([]byte, error) {
+					return tt.input.beRes.([]byte), tt.input.beErr
+				},
+				GetBucketPolicyFunc: func(contextMoqParam context.Context, bucket string) ([]byte, error) {
+					return nil, s3err.GetAPIError(s3err.ErrAccessDenied)
+				},
+			}
+
+			ctrl := S3ApiController{be: be}
+
+			testController(t, ctrl.GetBucketLifecycleConfiguration, tt.output.response, tt.output.err, ctxInputs{
+				locals: tt.input.locals,
+			})
+		})
+	}
+}
