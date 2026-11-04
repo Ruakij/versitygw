@@ -656,7 +656,7 @@ func TestLifecycleShutdown(t *testing.T) {
 		e.put("a", "x", lcBase)
 		e.clock = lcDay(5)
 
-		e.p.startLifecycle(time.Hour, 0)
+		e.p.startLifecycle(lifecycleSchedule{interval: time.Hour}, 0)
 		require.Eventually(t, func() bool { return len(e.keys()) == 0 }, 5*time.Second, 10*time.Millisecond)
 
 		e.p.stopLifecycle()

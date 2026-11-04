@@ -55,6 +55,12 @@ type ScoutfsOpts struct {
 	// LifecycleInterval is the time between two runs of the bucket lifecycle
 	// rules. Zero disables them.
 	LifecycleInterval time.Duration
+	// LifecycleStart is the offset from midnight UTC that anchors the
+	// schedule of LifecycleInterval.
+	LifecycleStart time.Duration
+	// LifecycleConcurrency is the number of buckets whose lifecycle rules
+	// run at the same time.
+	LifecycleConcurrency int
 	// Concurrency sets the maximum number of concurrently running POSIX actions.
 	// Defaults to 5000 when unset or non-positive.
 	Concurrency int

@@ -49,7 +49,21 @@ var (
 	defaultEtag          string
 	dataIntegrityEtag    bool
 	lifecycleInterval    time.Duration
+	lifecycleStart       string
+	lifecycleConcurrency int
 )
+
+// validateLifecycle checks the lifecycle options and returns the offset of
+// the schedule start from midnight UTC.
+func validateLifecycle() (time.Duration, error) {
+	if lifecycleInterval < 0 {
+		return 0, fmt.Errorf("lifecycle interval must not be negative, got %v", lifecycleInterval)
+	}
+	if lifecycleConcurrency < 1 {
+		return 0, fmt.Errorf("lifecycle concurrency must be at least 1, got %d", lifecycleConcurrency)
+	}
+	return posix.ParseLifecycleStart(lifecycleStart)
+}
 
 // PosixCommand returns the "posix" subcommand, common to all versitygw
 // binaries.
@@ -191,10 +205,24 @@ will be translated into the file /mnt/fs/gwroot/mybucket/a/b/c/myobject`,
 			},
 			&cli.DurationFlag{
 				Name:        "lifecycle-interval",
-				Usage:       "time between runs of the bucket lifecycle rules, which expire objects, noncurrent versions and incomplete multipart uploads; 0 disables the rules; with several gateways on one filesystem, enable it on one of them only",
+				Usage:       "time between runs of the bucket lifecycle rules, which expire objects, noncurrent versions and incomplete multipart uploads; 0 disables the rules; runs fall on a grid of this interval anchored at midnight UTC plus --lifecycle-start, with one catch-up run one to two minutes after start; an interval that does not divide 24h drifts against the time of day; with several gateways on one filesystem, enable it on one of them only",
 				EnvVars:     []string{"VGW_LIFECYCLE_INTERVAL"},
 				Value:       24 * time.Hour,
 				Destination: &lifecycleInterval,
+			},
+			&cli.StringFlag{
+				Name:        "lifecycle-start",
+				Usage:       "time of day in UTC as HH:MM or HH:MM:SS, from 00:00 to 23:59:59, that anchors the lifecycle schedule: with the default 24h interval the rules run daily at this time, with 6h and 00:00 at 00:00, 06:00, 12:00 and 18:00 UTC",
+				EnvVars:     []string{"VGW_LIFECYCLE_START"},
+				Value:       "00:00",
+				Destination: &lifecycleStart,
+			},
+			&cli.IntFlag{
+				Name:        "lifecycle-concurrency",
+				Usage:       "maximum number of buckets whose lifecycle rules run at the same time",
+				EnvVars:     []string{"VGW_LIFECYCLE_CONCURRENCY"},
+				Value:       posix.DefaultLifecycleConcurrency,
+				Destination: &lifecycleConcurrency,
 			},
 		},
 	}
@@ -223,8 +251,9 @@ func runPosix(ctx *cli.Context) error {
 		return fmt.Errorf("concurrency must be positive, got %d", actionsConcurrency)
 	}
 
-	if lifecycleInterval < 0 {
-		return fmt.Errorf("lifecycle interval must not be negative, got %v", lifecycleInterval)
+	lifecycleStartOffset, err := validateLifecycle()
+	if err != nil {
+		return err
 	}
 
 	opts := posix.PosixOpts{
@@ -246,6 +275,8 @@ func runPosix(ctx *cli.Context) error {
 		DataIntegrityEtag:    dataIntegrityEtag,
 		ExcludeDirs:          ctx.StringSlice("exclude-dirs"),
 		LifecycleInterval:    lifecycleInterval,
+		LifecycleStart:       lifecycleStartOffset,
+		LifecycleConcurrency: lifecycleConcurrency,
 	}
 	opts.SetNewDirPerm(fs.FileMode(dirPerms))
 	opts.SetNewFilePerm(fs.FileMode(filePerms))

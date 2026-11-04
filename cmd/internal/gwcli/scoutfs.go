@@ -154,10 +154,24 @@ move interfaces as well as support for tiered filesystems.`,
 			},
 			&cli.DurationFlag{
 				Name:        "lifecycle-interval",
-				Usage:       "time between runs of the bucket lifecycle rules, which expire objects, noncurrent versions and incomplete multipart uploads; 0 disables the rules; with several gateways on one filesystem, enable it on one of them only",
+				Usage:       "time between runs of the bucket lifecycle rules, which expire objects, noncurrent versions and incomplete multipart uploads; 0 disables the rules; runs fall on a grid of this interval anchored at midnight UTC plus --lifecycle-start, with one catch-up run one to two minutes after start; an interval that does not divide 24h drifts against the time of day; with several gateways on one filesystem, enable it on one of them only",
 				EnvVars:     []string{"VGW_LIFECYCLE_INTERVAL"},
 				Value:       24 * time.Hour,
 				Destination: &lifecycleInterval,
+			},
+			&cli.StringFlag{
+				Name:        "lifecycle-start",
+				Usage:       "time of day in UTC as HH:MM or HH:MM:SS, from 00:00 to 23:59:59, that anchors the lifecycle schedule: with the default 24h interval the rules run daily at this time, with 6h and 00:00 at 00:00, 06:00, 12:00 and 18:00 UTC",
+				EnvVars:     []string{"VGW_LIFECYCLE_START"},
+				Value:       "00:00",
+				Destination: &lifecycleStart,
+			},
+			&cli.IntFlag{
+				Name:        "lifecycle-concurrency",
+				Usage:       "maximum number of buckets whose lifecycle rules run at the same time",
+				EnvVars:     []string{"VGW_LIFECYCLE_CONCURRENCY"},
+				Value:       posix.DefaultLifecycleConcurrency,
+				Destination: &lifecycleConcurrency,
 			},
 		},
 	}
@@ -180,8 +194,9 @@ func runScoutfs(ctx *cli.Context) error {
 		return fmt.Errorf("concurrency must be positive, got %d", actionsConcurrency)
 	}
 
-	if lifecycleInterval < 0 {
-		return fmt.Errorf("lifecycle interval must not be negative, got %v", lifecycleInterval)
+	lifecycleStartOffset, err := validateLifecycle()
+	if err != nil {
+		return err
 	}
 
 	if scoutfsLockMode != string(posix.ObjectLockModeLocal) && scoutfsLockMode != string(posix.ObjectLockModeNone) {
@@ -205,6 +220,8 @@ func runScoutfs(ctx *cli.Context) error {
 	opts.DataIntegrityEtag = dataIntegrityEtag
 	opts.EnableODirect = enableODirect
 	opts.LifecycleInterval = lifecycleInterval
+	opts.LifecycleStart = lifecycleStartOffset
+	opts.LifecycleConcurrency = lifecycleConcurrency
 	opts.SetNewDirPerm(fs.FileMode(dirPerms))
 	opts.SetNewFilePerm(fs.FileMode(filePerms))
 

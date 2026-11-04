@@ -43,6 +43,9 @@ const (
 	// defaultLifecyclePageSize is the number of versions requested per
 	// listing page.
 	defaultLifecyclePageSize = 1000
+	// DefaultLifecycleConcurrency is the number of buckets whose lifecycle
+	// rules are applied at the same time.
+	DefaultLifecycleConcurrency = 4
 )
 
 // lifecycleStats counts what a lifecycle run did in one bucket.
@@ -89,9 +92,47 @@ type lifecycleKey struct {
 	markers  []s3response.DeleteMarkerEntry
 }
 
-// startLifecycle starts the goroutine that runs the lifecycle rules of all
-// buckets after firstDelay and then every interval.
-func (p *Posix) startLifecycle(interval, firstDelay time.Duration) {
+// ParseLifecycleStart parses the time of day, in UTC, that anchors the
+// lifecycle schedule: HH:MM or HH:MM:SS from 00:00 to 23:59:59. It returns
+// the offset from midnight.
+func ParseLifecycleStart(s string) (time.Duration, error) {
+	for _, layout := range []string{"15:04", "15:04:05"} {
+		t, err := time.Parse(layout, s)
+		if err != nil {
+			continue
+		}
+		return time.Duration(t.Hour())*time.Hour + time.Duration(t.Minute())*time.Minute +
+			time.Duration(t.Second())*time.Second, nil
+	}
+	return 0, fmt.Errorf("invalid lifecycle start %q: want a time of day in UTC as HH:MM or HH:MM:SS, from 00:00 to 23:59:59", s)
+}
+
+// lifecycleSchedule places the runs of the lifecycle rules on a grid of
+// the interval anchored at the Unix epoch plus start. The grid does not
+// depend on when the gateway started, so gateways and restarts agree on the
+// slots. An interval that does not divide 24h drifts against the time of
+// day from one day to the next.
+type lifecycleSchedule struct {
+	interval time.Duration
+	start    time.Duration
+}
+
+// next returns the first slot after now. A slot at now itself has been
+// taken already.
+func (s lifecycleSchedule) next(now time.Time) time.Time {
+	iv := s.interval.Nanoseconds()
+	rel := now.UnixNano() - s.start.Nanoseconds()
+	k := rel / iv
+	if rel%iv < 0 {
+		k--
+	}
+	return time.Unix(0, (k+1)*iv+s.start.Nanoseconds()).UTC()
+}
+
+// startLifecycle starts the goroutine that applies the lifecycle rules of
+// all buckets once after firstDelay, to catch up after a start, and then at
+// every slot of the schedule.
+func (p *Posix) startLifecycle(sched lifecycleSchedule, firstDelay time.Duration) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	p.lifecycleCancel = cancel
@@ -99,40 +140,59 @@ func (p *Posix) startLifecycle(interval, firstDelay time.Duration) {
 
 	go func() {
 		defer close(done)
-		timer := time.NewTimer(firstDelay)
-		defer timer.Stop()
+		if !p.lifecycleWait(ctx, p.now().Add(firstDelay)) {
+			return
+		}
+		p.dispatchLifecycle(ctx)
 		for {
-			select {
-			case <-ctx.Done():
+			if !p.lifecycleWait(ctx, sched.next(p.now())) {
 				return
-			case <-timer.C:
 			}
-			p.runLifecycle(ctx)
-			timer.Reset(interval)
+			p.dispatchLifecycle(ctx)
 		}
 	}()
 }
 
-// stopLifecycle stops the lifecycle goroutine and waits for a running pass
-// to end.
+// lifecycleWait blocks until the clock reaches t and reports false when ctx
+// ends first.
+func (p *Posix) lifecycleWait(ctx context.Context, t time.Time) bool {
+	if p.lifecycleWaitFn != nil {
+		return p.lifecycleWaitFn(ctx, t)
+	}
+	timer := time.NewTimer(t.Sub(p.now()))
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+// stopLifecycle stops the lifecycle goroutine and cancels the bucket tasks
+// it started, then waits for all of them to end.
 func (p *Posix) stopLifecycle() {
 	if p.lifecycleCancel == nil {
 		return
 	}
 	p.lifecycleCancel()
 	<-p.lifecycleDone
+	p.lifecycleTasks.Wait()
 }
 
-// lifecycleStartDelay returns the delay of the first run: spreading the
-// first run of gateways started together keeps them from walking a shared
+// lifecycleStartDelay returns the delay of the catch-up run: spreading the
+// catch-up runs of gateways started together keeps them from walking a shared
 // filesystem at the same time.
 func lifecycleStartDelay() time.Duration {
 	return lifecycleFirstRunDelay + time.Duration(rand.Int64N(int64(lifecycleFirstRunDelay)))
 }
 
-// runLifecycle applies the lifecycle configuration of every bucket once.
-// Failures are logged and do not stop the run.
-func (p *Posix) runLifecycle(ctx context.Context) {
+// dispatchLifecycle starts a task for every bucket with a lifecycle
+// configuration and returns without waiting for them. A bucket whose
+// previous task has not ended gets no new one; the other buckets are not
+// affected by it. At most p.lifecycleConcurrency tasks run at once, the rest
+// wait for a slot.
+func (p *Posix) dispatchLifecycle(ctx context.Context) {
 	fis, err := listBucketFileInfos(p.rootPath(), p.bucketlinks)
 	if err != nil {
 		log.Printf("lifecycle: list buckets: %v", err)
@@ -146,15 +206,94 @@ func (p *Posix) runLifecycle(ctx context.Context) {
 		if p.isExcludedName(bucket) || !p.isBucketValid(bucket) {
 			continue
 		}
-		stats, ok := p.lifecycleRunBucket(ctx, bucket)
-		if !ok {
+		if !p.hasLifecycleConfig(bucket) {
 			continue
 		}
-		log.Printf("lifecycle: bucket %q: deleted versions %d, delete markers created %d, "+
-			"delete markers removed %d, uploads aborted %d, skipped locked %d, skipped changed %d, errors %d",
-			bucket, stats.deleted, stats.markersCreated, stats.markersRemoved,
-			stats.aborted, stats.skippedLocked, stats.raced, stats.errors)
+		if !p.lifecycleClaim(bucket) {
+			log.Printf("lifecycle: bucket %q: skipped, the previous run is still in progress", bucket)
+			continue
+		}
+		p.lifecycleTasks.Add(1)
+		go func() {
+			defer p.lifecycleTasks.Done()
+			defer p.lifecycleRelease(bucket)
+			p.lifecycleTask(ctx, bucket)
+		}()
 	}
+}
+
+// hasLifecycleConfig reports whether the bucket has a lifecycle
+// configuration stored.
+func (p *Posix) hasLifecycleConfig(bucket string) bool {
+	_, err := p.meta.RetrieveAttribute(nil, bucket, "", lifecyclekey)
+	return err == nil
+}
+
+// lifecycleClaim marks the bucket as running and reports false when it
+// already is.
+func (p *Posix) lifecycleClaim(bucket string) bool {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.lifecycleRunning[bucket] {
+		return false
+	}
+	if p.lifecycleRunning == nil {
+		p.lifecycleRunning = make(map[string]bool)
+	}
+	p.lifecycleRunning[bucket] = true
+	return true
+}
+
+func (p *Posix) lifecycleRelease(bucket string) {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	delete(p.lifecycleRunning, bucket)
+}
+
+// lifecycleSlots returns the channel that bounds the running bucket tasks.
+func (p *Posix) lifecycleSlots() chan struct{} {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.lifecycleSem == nil {
+		n := p.lifecycleConcurrency
+		if n < 1 {
+			n = DefaultLifecycleConcurrency
+		}
+		p.lifecycleSem = make(chan struct{}, n)
+	}
+	return p.lifecycleSem
+}
+
+// lifecycleTask waits for a free slot and applies the lifecycle rules of the
+// bucket. A failure is logged and stays within the bucket.
+func (p *Posix) lifecycleTask(ctx context.Context, bucket string) {
+	slots := p.lifecycleSlots()
+	select {
+	case slots <- struct{}{}:
+		defer func() { <-slots }()
+	case <-ctx.Done():
+		return
+	}
+
+	if p.lifecycleBucketFn != nil {
+		p.lifecycleBucketFn(ctx, bucket)
+		return
+	}
+	stats, ok := p.lifecycleRunBucket(ctx, bucket)
+	if !ok {
+		return
+	}
+	log.Printf("lifecycle: bucket %q: deleted versions %d, delete markers created %d, "+
+		"delete markers removed %d, uploads aborted %d, skipped locked %d, skipped changed %d, errors %d",
+		bucket, stats.deleted, stats.markersCreated, stats.markersRemoved,
+		stats.aborted, stats.skippedLocked, stats.raced, stats.errors)
+}
+
+// runLifecycle applies the lifecycle rules of every bucket once and waits
+// for the tasks to end.
+func (p *Posix) runLifecycle(ctx context.Context) {
+	p.dispatchLifecycle(ctx)
+	p.lifecycleTasks.Wait()
 }
 
 // loadLifecycleRules returns the enabled rules of the bucket with an action
