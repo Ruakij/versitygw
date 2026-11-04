@@ -74,18 +74,21 @@ func New(rootdir string, opts ScoutfsOpts) (*ScoutFS, error) {
 	}
 
 	posixOpts := posix.PosixOpts{
-		ChownUID:            opts.ChownUID,
-		ChownGID:            opts.ChownGID,
-		BucketLinks:         opts.BucketLinks,
-		VersioningDir:       opts.VersioningDir,
-		ValidateBucketNames: opts.ValidateBucketNames,
-		Concurrency:         opts.Concurrency,
-		IOBufferSize:        opts.IOBufferSize,
-		CopyObjectThreshold: opts.CopyObjectThreshold,
-		DefaultEtag:         opts.DefaultEtag,
-		DataIntegrityEtag:   opts.DataIntegrityEtag,
-		EnableODirect:       opts.EnableODirect,
-		ObjectLockMode:      objectLockMode,
+		ChownUID:             opts.ChownUID,
+		ChownGID:             opts.ChownGID,
+		BucketLinks:          opts.BucketLinks,
+		VersioningDir:        opts.VersioningDir,
+		ValidateBucketNames:  opts.ValidateBucketNames,
+		Concurrency:          opts.Concurrency,
+		IOBufferSize:         opts.IOBufferSize,
+		CopyObjectThreshold:  opts.CopyObjectThreshold,
+		DefaultEtag:          opts.DefaultEtag,
+		DataIntegrityEtag:    opts.DataIntegrityEtag,
+		EnableODirect:        opts.EnableODirect,
+		ObjectLockMode:       objectLockMode,
+		LifecycleInterval:    opts.LifecycleInterval,
+		LifecycleStart:       opts.LifecycleStart,
+		LifecycleConcurrency: opts.LifecycleConcurrency,
 	}
 	if opts.newDirPermSet {
 		posixOpts.SetNewDirPerm(opts.NewDirPerm)
