@@ -411,3 +411,52 @@ func TestS3ApiController_DeleteBucket(t *testing.T) {
 		})
 	}
 }
+
+func TestS3ApiController_DeleteBucketLifecycle(t *testing.T) {
+	noContent := &Response{MetaOpts: &MetaOptions{BucketOwner: "root", Status: http.StatusNoContent}}
+	tests := []struct {
+		name   string
+		input  testInput
+		output testOutput
+	}{
+		{
+			name:  "verify access fails",
+			input: testInput{locals: accessDeniedLocals},
+			output: testOutput{
+				response: &Response{MetaOpts: &MetaOptions{BucketOwner: "root"}},
+				err:      s3err.GetAPIError(s3err.ErrAccessDenied),
+			},
+		},
+		{
+			name:  "backend returns error",
+			input: testInput{locals: defaultLocals, beErr: s3err.GetAPIError(s3err.ErrNoSuchBucket)},
+			output: testOutput{
+				response: noContent,
+				err:      s3err.GetAPIError(s3err.ErrNoSuchBucket),
+			},
+		},
+		{
+			name:   "successful response",
+			input:  testInput{locals: defaultLocals},
+			output: testOutput{response: noContent},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			be := &BackendMock{
+				DeleteBucketLifecycleFunc: func(contextMoqParam context.Context, bucket string) error {
+					return tt.input.beErr
+				},
+				GetBucketPolicyFunc: func(contextMoqParam context.Context, bucket string) ([]byte, error) {
+					return nil, s3err.GetAPIError(s3err.ErrAccessDenied)
+				},
+			}
+
+			ctrl := S3ApiController{be: be}
+
+			testController(t, ctrl.DeleteBucketLifecycle, tt.output.response, tt.output.err, ctxInputs{
+				locals: tt.input.locals,
+			})
+		})
+	}
+}

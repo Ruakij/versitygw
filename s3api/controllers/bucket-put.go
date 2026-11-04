@@ -277,6 +277,58 @@ func (c S3ApiController) PutBucketCors(ctx fiber.Ctx) (*Response, error) {
 	}, err
 }
 
+func (c S3ApiController) PutBucketLifecycleConfiguration(ctx fiber.Ctx) (*Response, error) {
+	bucket := ctx.Params("bucket")
+	parsedAcl := utils.ContextKeyParsedAcl.Get(ctx).(auth.ACL)
+	acct := utils.ContextKeyAccount.Get(ctx).(auth.Account)
+	isRoot := utils.ContextKeyIsRoot.Get(ctx).(bool)
+	isPublicBucket := utils.ContextKeyPublicBucket.IsSet(ctx)
+
+	err := c.verifyAccess(ctx, auth.AccessOptions{
+		Acl:             parsedAcl,
+		AclPermission:   auth.PermissionWrite,
+		IsRoot:          isRoot,
+		Acc:             acct,
+		Bucket:          bucket,
+		Actions:         []auth.Action{auth.PutLifecycleConfigurationAction},
+		IsPublicRequest: isPublicBucket,
+	})
+	if err != nil {
+		return &Response{
+			MetaOpts: &MetaOptions{
+				BucketOwner: parsedAcl.Owner,
+			},
+		}, err
+	}
+
+	body := ctx.BodyRaw()
+
+	lifecycleConfig, err := s3response.ParseLifecycleConfiguration(body)
+	if err != nil {
+		return &Response{
+			MetaOpts: &MetaOptions{
+				BucketOwner: parsedAcl.Owner,
+			},
+		}, err
+	}
+
+	err = lifecycleConfig.Validate()
+	if err != nil {
+		return &Response{
+			MetaOpts: &MetaOptions{
+				BucketOwner: parsedAcl.Owner,
+			},
+		}, err
+	}
+
+	err = c.be.PutBucketLifecycleConfiguration(ctx.RequestCtx(), bucket, body)
+	return &Response{
+		MetaOpts: &MetaOptions{
+			BucketOwner: parsedAcl.Owner,
+		},
+	}, err
+}
+
 func (c S3ApiController) PutBucketWebsite(ctx fiber.Ctx) (*Response, error) {
 	bucket := ctx.Params("bucket")
 	parsedAcl := utils.ContextKeyParsedAcl.Get(ctx).(auth.ACL)
