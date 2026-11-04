@@ -747,6 +747,24 @@ func TestDeleteBucketPolicy(ts *TestState) {
 	ts.Run(DeleteBucketPolicy_success)
 }
 
+func TestPutBucketLifecycleConfiguration(ts *TestState) {
+	ts.Run(PutBucketLifecycleConfiguration_non_existing_bucket)
+	ts.Run(PutBucketLifecycleConfiguration_empty_rules)
+	ts.Run(PutBucketLifecycleConfiguration_invalid_rules)
+	ts.Run(PutBucketLifecycleConfiguration_success)
+}
+
+func TestGetBucketLifecycleConfiguration(ts *TestState) {
+	ts.Run(GetBucketLifecycleConfiguration_non_existing_bucket)
+	ts.Run(GetBucketLifecycleConfiguration_no_such_lifecycle_configuration)
+	ts.Run(GetBucketLifecycleConfiguration_success)
+}
+
+func TestDeleteBucketLifecycle(ts *TestState) {
+	ts.Run(DeleteBucketLifecycle_non_existing_bucket)
+	ts.Run(DeleteBucketLifecycle_success)
+}
+
 func TestPutBucketCors(ts *TestState) {
 	ts.Run(PutBucketCors_non_existing_bucket)
 	ts.Run(PutBucketCors_empty_cors_rules)
@@ -930,10 +948,6 @@ func TestNotImplementedActions(ts *TestState) {
 	ts.Run(GetBucketInventoryConfiguration_not_implemented)
 	ts.Run(ListBucketInventoryConfiguration_not_implemented)
 	ts.Run(DeleteBucketInventoryConfiguration_not_implemented)
-	// bucket lifecycle configuration actions
-	ts.Run(PutBucketLifecycleConfiguration_not_implemented)
-	ts.Run(GetBucketLifecycleConfiguration_not_implemented)
-	ts.Run(DeleteBucketLifecycle_not_implemented)
 	// bucket logging actions
 	ts.Run(PutBucketLogging_not_implemented)
 	ts.Run(GetBucketLogging_not_implemented)
@@ -1063,6 +1077,9 @@ func TestFullFlow(ts *TestState) {
 	TestPutBucketCors(ts)
 	TestGetBucketCors(ts)
 	TestDeleteBucketCors(ts)
+	TestPutBucketLifecycleConfiguration(ts)
+	TestGetBucketLifecycleConfiguration(ts)
+	TestDeleteBucketLifecycle(ts)
 	TestPutBucketWebsite(ts)
 	TestGetBucketWebsite(ts)
 	TestDeleteBucketWebsite(ts)
@@ -3569,6 +3586,15 @@ func GetIntTests() IntTests {
 		"GetBucketCors_success":                                                            GetBucketCors_success,
 		"DeleteBucketCors_non_existing_bucket":                                             DeleteBucketCors_non_existing_bucket,
 		"DeleteBucketCors_success":                                                         DeleteBucketCors_success,
+		"PutBucketLifecycleConfiguration_non_existing_bucket":                              PutBucketLifecycleConfiguration_non_existing_bucket,
+		"PutBucketLifecycleConfiguration_empty_rules":                                      PutBucketLifecycleConfiguration_empty_rules,
+		"PutBucketLifecycleConfiguration_invalid_rules":                                    PutBucketLifecycleConfiguration_invalid_rules,
+		"PutBucketLifecycleConfiguration_success":                                          PutBucketLifecycleConfiguration_success,
+		"GetBucketLifecycleConfiguration_non_existing_bucket":                              GetBucketLifecycleConfiguration_non_existing_bucket,
+		"GetBucketLifecycleConfiguration_no_such_lifecycle_configuration":                  GetBucketLifecycleConfiguration_no_such_lifecycle_configuration,
+		"GetBucketLifecycleConfiguration_success":                                          GetBucketLifecycleConfiguration_success,
+		"DeleteBucketLifecycle_non_existing_bucket":                                        DeleteBucketLifecycle_non_existing_bucket,
+		"DeleteBucketLifecycle_success":                                                    DeleteBucketLifecycle_success,
 		"PutBucketCors_success":                                                            PutBucketCors_success,
 		"PutBucketWebsite_non_existing_bucket":                                             PutBucketWebsite_non_existing_bucket,
 		"PutBucketWebsite_empty_suffix":                                                    PutBucketWebsite_empty_suffix,
@@ -3689,9 +3715,6 @@ func GetIntTests() IntTests {
 		"GetBucketInventoryConfiguration_not_implemented":                                  GetBucketInventoryConfiguration_not_implemented,
 		"ListBucketInventoryConfiguration_not_implemented":                                 ListBucketInventoryConfiguration_not_implemented,
 		"DeleteBucketInventoryConfiguration_not_implemented":                               DeleteBucketInventoryConfiguration_not_implemented,
-		"PutBucketLifecycleConfiguration_not_implemented":                                  PutBucketLifecycleConfiguration_not_implemented,
-		"GetBucketLifecycleConfiguration_not_implemented":                                  GetBucketLifecycleConfiguration_not_implemented,
-		"DeleteBucketLifecycle_not_implemented":                                            DeleteBucketLifecycle_not_implemented,
 		"PutBucketLogging_not_implemented":                                                 PutBucketLogging_not_implemented,
 		"GetBucketLogging_not_implemented":                                                 GetBucketLogging_not_implemented,
 		"PutBucketRequestPayment_not_implemented":                                          PutBucketRequestPayment_not_implemented,

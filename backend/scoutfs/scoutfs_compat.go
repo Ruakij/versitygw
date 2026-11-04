@@ -86,6 +86,7 @@ func New(rootdir string, opts ScoutfsOpts) (*ScoutFS, error) {
 		DataIntegrityEtag:   opts.DataIntegrityEtag,
 		EnableODirect:       opts.EnableODirect,
 		ObjectLockMode:      objectLockMode,
+		LifecycleInterval:   opts.LifecycleInterval,
 	}
 	if opts.newDirPermSet {
 		posixOpts.SetNewDirPerm(opts.NewDirPerm)

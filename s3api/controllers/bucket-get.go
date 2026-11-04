@@ -191,6 +191,48 @@ func (c S3ApiController) GetBucketCors(ctx fiber.Ctx) (*Response, error) {
 	}, err
 }
 
+func (c S3ApiController) GetBucketLifecycleConfiguration(ctx fiber.Ctx) (*Response, error) {
+	bucket := ctx.Params("bucket")
+	acct := utils.ContextKeyAccount.Get(ctx).(auth.Account)
+	isRoot := utils.ContextKeyIsRoot.Get(ctx).(bool)
+	isPublicBucket := utils.ContextKeyPublicBucket.IsSet(ctx)
+	parsedAcl := utils.ContextKeyParsedAcl.Get(ctx).(auth.ACL)
+
+	err := c.verifyAccess(ctx, auth.AccessOptions{
+		Acl:             parsedAcl,
+		AclPermission:   auth.PermissionRead,
+		IsRoot:          isRoot,
+		Acc:             acct,
+		Bucket:          bucket,
+		Actions:         []auth.Action{auth.GetLifecycleConfigurationAction},
+		IsPublicRequest: isPublicBucket,
+	})
+	if err != nil {
+		return &Response{
+			MetaOpts: &MetaOptions{
+				BucketOwner: parsedAcl.Owner,
+			},
+		}, err
+	}
+
+	data, err := c.be.GetBucketLifecycleConfiguration(ctx.RequestCtx(), bucket)
+	if err != nil {
+		return &Response{
+			MetaOpts: &MetaOptions{
+				BucketOwner: parsedAcl.Owner,
+			},
+		}, err
+	}
+
+	output, err := s3response.ParseLifecycleConfigOutput(data)
+	return &Response{
+		Data: output,
+		MetaOpts: &MetaOptions{
+			BucketOwner: parsedAcl.Owner,
+		},
+	}, err
+}
+
 func (c S3ApiController) GetBucketWebsite(ctx fiber.Ctx) (*Response, error) {
 	bucket := ctx.Params("bucket")
 	acct := utils.ContextKeyAccount.Get(ctx).(auth.Account)

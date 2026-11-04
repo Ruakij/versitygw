@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io/fs"
 	"math"
+	"time"
 
 	"github.com/urfave/cli/v2"
 	"github.com/versity/versitygw/backend/meta"
@@ -47,6 +48,7 @@ var (
 	ioBufferSize         int
 	defaultEtag          string
 	dataIntegrityEtag    bool
+	lifecycleInterval    time.Duration
 )
 
 // PosixCommand returns the "posix" subcommand, common to all versitygw
@@ -187,6 +189,13 @@ will be translated into the file /mnt/fs/gwroot/mybucket/a/b/c/myobject`,
 				Usage:   "directory name, not a path, to hide from object listings and reserve at any depth in a bucket; object keys through it are rejected, and it can't be used as a bucket name (can be specified multiple times)",
 				EnvVars: []string{"VGW_EXCLUDE_DIRS"},
 			},
+			&cli.DurationFlag{
+				Name:        "lifecycle-interval",
+				Usage:       "time between runs of the bucket lifecycle rules, which expire objects, noncurrent versions and incomplete multipart uploads; 0 disables the rules; with several gateways on one filesystem, enable it on one of them only",
+				EnvVars:     []string{"VGW_LIFECYCLE_INTERVAL"},
+				Value:       24 * time.Hour,
+				Destination: &lifecycleInterval,
+			},
 		},
 	}
 }
@@ -214,6 +223,10 @@ func runPosix(ctx *cli.Context) error {
 		return fmt.Errorf("concurrency must be positive, got %d", actionsConcurrency)
 	}
 
+	if lifecycleInterval < 0 {
+		return fmt.Errorf("lifecycle interval must not be negative, got %v", lifecycleInterval)
+	}
+
 	opts := posix.PosixOpts{
 		ChownUID:             chownuid,
 		ChownGID:             chowngid,
@@ -232,6 +245,7 @@ func runPosix(ctx *cli.Context) error {
 		DefaultEtag:          defaultEtag,
 		DataIntegrityEtag:    dataIntegrityEtag,
 		ExcludeDirs:          ctx.StringSlice("exclude-dirs"),
+		LifecycleInterval:    lifecycleInterval,
 	}
 	opts.SetNewDirPerm(fs.FileMode(dirPerms))
 	opts.SetNewFilePerm(fs.FileMode(filePerms))

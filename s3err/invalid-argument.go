@@ -378,6 +378,17 @@ func GetInvalidArgumentErr(code InvalidArgErrorCode, value string) InvalidArgume
 	return err
 }
 
+// GetInvalidArgLifecycleErr returns the InvalidArgument error for an invalid
+// value in a lifecycle configuration. argName is the XML element or
+// attribute that holds the value.
+func GetInvalidArgLifecycleErr(argName, value, description string) InvalidArgumentError {
+	return InvalidArgumentError{
+		ArgumentName:  argName,
+		ArgumentValue: value,
+		Description:   description,
+	}
+}
+
 func GetInvalidArgMaxLimiter(name, value string) InvalidArgumentError {
 	return InvalidArgumentError{
 		ArgumentName:  name,

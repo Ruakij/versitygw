@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io/fs"
 	"math"
+	"time"
 
 	"github.com/urfave/cli/v2"
 	"github.com/versity/versitygw/backend/posix"
@@ -151,6 +152,13 @@ move interfaces as well as support for tiered filesystems.`,
 				EnvVars:     []string{"VGW_ENABLE_O_DIRECT"},
 				Destination: &enableODirect,
 			},
+			&cli.DurationFlag{
+				Name:        "lifecycle-interval",
+				Usage:       "time between runs of the bucket lifecycle rules, which expire objects, noncurrent versions and incomplete multipart uploads; 0 disables the rules; with several gateways on one filesystem, enable it on one of them only",
+				EnvVars:     []string{"VGW_LIFECYCLE_INTERVAL"},
+				Value:       24 * time.Hour,
+				Destination: &lifecycleInterval,
+			},
 		},
 	}
 }
@@ -170,6 +178,10 @@ func runScoutfs(ctx *cli.Context) error {
 
 	if actionsConcurrency <= 0 {
 		return fmt.Errorf("concurrency must be positive, got %d", actionsConcurrency)
+	}
+
+	if lifecycleInterval < 0 {
+		return fmt.Errorf("lifecycle interval must not be negative, got %v", lifecycleInterval)
 	}
 
 	if scoutfsLockMode != string(posix.ObjectLockModeLocal) && scoutfsLockMode != string(posix.ObjectLockModeNone) {
@@ -192,6 +204,7 @@ func runScoutfs(ctx *cli.Context) error {
 	opts.DefaultEtag = defaultEtag
 	opts.DataIntegrityEtag = dataIntegrityEtag
 	opts.EnableODirect = enableODirect
+	opts.LifecycleInterval = lifecycleInterval
 	opts.SetNewDirPerm(fs.FileMode(dirPerms))
 	opts.SetNewFilePerm(fs.FileMode(filePerms))
 
