@@ -1748,3 +1748,43 @@ func comparePrefixesUnordered(got []types.CommonPrefix, want []string) bool {
 	}
 	return true
 }
+
+// TestWalkVersionsMarkerGone checks that the keys after the key marker are
+// listed when the version the marker names was deleted since the previous
+// page.
+func TestWalkVersionsMarkerGone(t *testing.T) {
+	fsys := fstest.MapFS{"a": {}, "b": {}, "c": {}}
+
+	// like the file system backend, versions are skipped until the one the
+	// marker names has been passed
+	getVersions := func(path, versionIdMarker string, pastVersionIdMarker *bool, availableObjCount int, d fs.DirEntry) (*backend.ObjVersionFuncResult, error) {
+		var res backend.ObjVersionFuncResult
+		for _, id := range []string{"v3", "v2", "v1"} {
+			if path == "a" && id == "v2" {
+				// deleted since the previous page
+				continue
+			}
+			if !*pastVersionIdMarker {
+				*pastVersionIdMarker = id == versionIdMarker
+				continue
+			}
+			key := path
+			res.ObjectVersions = append(res.ObjectVersions, s3response.ObjectVersion{Key: &key, VersionId: backend.GetPtrFromString(id)})
+		}
+		return &res, nil
+	}
+
+	// "v2" of key "a" no longer exists
+	res, err := backend.WalkVersions(context.Background(), fsys, "", "", "a", "v2", 1000, getVersions, backend.SkipDirs{})
+	if err != nil {
+		t.Fatalf("walk versions: %v", err)
+	}
+
+	got := make(map[string]int)
+	for _, v := range res.ObjectVersions {
+		got[*v.Key]++
+	}
+	if got["b"] != 3 || got["c"] != 3 {
+		t.Errorf("expected all versions of b and c, got %v", got)
+	}
+}

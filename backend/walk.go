@@ -216,6 +216,14 @@ func WalkVersions(ctx context.Context, fileSystem fs.FS, prefix, delimiter, keyM
 			}
 		}
 
+		// The version marker belongs to the key marker only. When it is
+		// gone, because the version was deleted since the previous page,
+		// no version of that key matches it and the keys after it have to
+		// be listed from their first version.
+		if keyMarker != "" && key > keyMarker {
+			pastVersionIdMarker = true
+		}
+
 		if d.IsDir() {
 			// If prefix is defined and the directory does not match prefix,
 			// do not descend into the directory because nothing will
