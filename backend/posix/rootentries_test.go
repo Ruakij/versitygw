@@ -234,6 +234,16 @@ func bucketCalls(ctx context.Context, p *Posix, bucket, object, uploadID string)
 		{"DeleteBucketCors", func(b string) error {
 			return p.DeleteBucketCors(ctx, b)
 		}},
+		{"PutBucketLifecycleConfiguration", func(b string) error {
+			return p.PutBucketLifecycleConfiguration(ctx, b, []byte("<LifecycleConfiguration/>"))
+		}},
+		{"GetBucketLifecycleConfiguration", func(b string) error {
+			_, err := p.GetBucketLifecycleConfiguration(ctx, b)
+			return err
+		}},
+		{"DeleteBucketLifecycle", func(b string) error {
+			return p.DeleteBucketLifecycle(ctx, b)
+		}},
 		{"PutBucketWebsite", func(b string) error {
 			return p.PutBucketWebsite(ctx, b, []byte("<WebsiteConfiguration/>"))
 		}},

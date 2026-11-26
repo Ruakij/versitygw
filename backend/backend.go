@@ -52,6 +52,9 @@ type Backend interface {
 	PutBucketCors(_ context.Context, bucket string, cors []byte) error
 	GetBucketCors(_ context.Context, bucket string) ([]byte, error)
 	DeleteBucketCors(_ context.Context, bucket string) error
+	PutBucketLifecycleConfiguration(_ context.Context, bucket string, config []byte) error
+	GetBucketLifecycleConfiguration(_ context.Context, bucket string) ([]byte, error)
+	DeleteBucketLifecycle(_ context.Context, bucket string) error
 	PutBucketWebsite(_ context.Context, bucket string, website []byte) error
 	GetBucketWebsite(_ context.Context, bucket string) ([]byte, error)
 	DeleteBucketWebsite(_ context.Context, bucket string) error
@@ -175,6 +178,15 @@ func (BackendUnsupported) GetBucketCors(_ context.Context, bucket string) ([]byt
 	return nil, s3err.GetAPIError(s3err.ErrNotImplemented)
 }
 func (BackendUnsupported) DeleteBucketCors(_ context.Context, bucket string) error {
+	return s3err.GetAPIError(s3err.ErrNotImplemented)
+}
+func (BackendUnsupported) PutBucketLifecycleConfiguration(_ context.Context, bucket string, config []byte) error {
+	return s3err.GetAPIError(s3err.ErrNotImplemented)
+}
+func (BackendUnsupported) GetBucketLifecycleConfiguration(_ context.Context, bucket string) ([]byte, error) {
+	return nil, s3err.GetAPIError(s3err.ErrNotImplemented)
+}
+func (BackendUnsupported) DeleteBucketLifecycle(_ context.Context, bucket string) error {
 	return s3err.GetAPIError(s3err.ErrNotImplemented)
 }
 func (BackendUnsupported) PutBucketWebsite(_ context.Context, bucket string, website []byte) error {

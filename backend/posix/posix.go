@@ -182,6 +182,29 @@ type Posix struct {
 	// migrationDone is closed when it has returned.
 	stopMigration context.CancelFunc
 	migrationDone chan struct{}
+
+	// now is the clock of the lifecycle rules
+	now func() time.Time
+	// lifecyclePageSize is the number of versions a lifecycle run lists at
+	// once
+	lifecyclePageSize int
+	// lifecycleCancel and lifecycleDone stop the lifecycle goroutine and
+	// wait for it to end. They are nil when lifecycle is disabled.
+	lifecycleCancel context.CancelFunc
+	lifecycleDone   chan struct{}
+	// lifecycleTasks counts the running bucket tasks.
+	lifecycleTasks sync.WaitGroup
+	// lifecycleMu guards lifecycleRunning, the buckets with a task, and
+	// lifecycleSem, which bounds the tasks that run at once to
+	// lifecycleConcurrency.
+	lifecycleMu          sync.Mutex
+	lifecycleRunning     map[string]bool
+	lifecycleSem         chan struct{}
+	lifecycleConcurrency int
+	// lifecycleWaitFn and lifecycleBucketFn replace the timer and the work of
+	// a bucket task
+	lifecycleWaitFn   func(ctx context.Context, t time.Time) bool
+	lifecycleBucketFn func(ctx context.Context, bucket string)
 }
 
 func (o *PosixOpts) SetNewDirPerm(perm fs.FileMode) {
@@ -224,6 +247,7 @@ const (
 	objectRetentionKey  = "object-retention"
 	objectLegalHoldKey  = "object-legal-hold"
 	corskey             = "cors"
+	lifecyclekey        = "lifecycle"
 	websitekey          = "website"
 	versioningKey       = "versioning"
 	deleteMarkerKey     = "delete-marker"
@@ -378,6 +402,19 @@ type PosixOpts struct {
 	// either, even with relaxed bucket name validation, and a directory with
 	// that name at the gateway root is not listed as a bucket.
 	ExcludeDirs []string
+	// LifecycleInterval is the time between two runs of the bucket
+	// lifecycle rules. Zero disables the rules: they are stored and
+	// returned, but objects are not expired. The runs fall on a grid of
+	// this interval anchored at the Unix epoch plus LifecycleStart, with
+	// one catch-up run shortly after start.
+	LifecycleInterval time.Duration
+	// LifecycleStart is the offset from midnight UTC that anchors the
+	// schedule of LifecycleInterval.
+	LifecycleStart time.Duration
+	// LifecycleConcurrency is the number of buckets whose lifecycle rules
+	// run at the same time. Defaults to DefaultLifecycleConcurrency when
+	// unset or non-positive.
+	LifecycleConcurrency int
 }
 
 // listingSkipDirs returns the directories the listing walks skip: the
@@ -545,15 +582,21 @@ func New(rootdir string, ms meta.MetadataStorer, opts PosixOpts) (*Posix, error)
 			b := alignedBuffer(ioBufferSize)
 			return &b
 		}},
-		dataIntegrityEtag: opts.DataIntegrityEtag,
-		skipDirs:          skipDirs,
-		objLockSlots:      newObjLockSlots(),
+		dataIntegrityEtag:    opts.DataIntegrityEtag,
+		skipDirs:             skipDirs,
+		objLockSlots:         newObjLockSlots(),
+		now:                  time.Now,
+		lifecyclePageSize:    defaultLifecyclePageSize,
+		lifecycleConcurrency: opts.LifecycleConcurrency,
 	}
 	if err := p.verifyObjectLockMode(); err != nil {
 		p.Shutdown()
 		return nil, err
 	}
 	p.startDeleteMarkerMigration()
+	if opts.LifecycleInterval > 0 {
+		p.startLifecycle(lifecycleSchedule{interval: opts.LifecycleInterval, start: opts.LifecycleStart}, lifecycleStartDelay())
+	}
 	return p, nil
 }
 
@@ -669,6 +712,7 @@ func (p *Posix) Shutdown() {
 		p.stopMigration()
 		<-p.migrationDone
 	}
+	p.stopLifecycle()
 	p.rootfd.Close()
 }
 
@@ -5613,10 +5657,19 @@ func (p *Posix) DeleteObject(ctx context.Context, input *s3.DeleteObjectInput) (
 		} else {
 			versionPath := p.genObjVersionPath(bucket, object)
 
+			// Removing the current version moves another one to the object
+			// path, which needs the lock of the operations that replace it.
+			// The lifecycle engine removes versions under it as well.
+			unlockVersion, err := p.lockObjectPublish(ctx, bucket, object)
+			if err != nil {
+				return nil, err
+			}
+			defer unlockVersion()
+
 			// the attributes at the object path may belong to the key with
 			// or without the trailing slash, or to a directory that isn't an
 			// object
-			_, err := p.statLiveObject(bucket, object)
+			_, err = p.statLiveObject(bucket, object)
 			if errors.Is(err, fs.ErrNotExist) {
 				// AWS returns success if the object does not exist
 				return &s3.DeleteObjectOutput{VersionId: input.VersionId}, nil
@@ -8237,6 +8290,73 @@ func (p *Posix) DeleteBucketCors(ctx context.Context, bucket string) error {
 		return s3err.GetBucketErr(s3err.ErrInvalidBucketName, bucket)
 	}
 	return p.PutBucketCors(ctx, bucket, nil)
+}
+
+func (p *Posix) PutBucketLifecycleConfiguration(ctx context.Context, bucket string, config []byte) (err error) {
+	defer backend.MapPermissionErr(&err)
+
+	release, err := p.acquireActionSlot(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	if !p.isBucketValid(bucket) {
+		return s3err.GetBucketErr(s3err.ErrInvalidBucketName, bucket)
+	}
+	err = p.doesBucketExist(bucket)
+	if err != nil {
+		return err
+	}
+
+	if config == nil {
+		err = p.meta.DeleteAttribute(bucket, "", lifecyclekey)
+		if err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
+			return fmt.Errorf("remove lifecycle: %w", err)
+		}
+
+		return nil
+	}
+
+	err = p.meta.StoreAttribute(nil, bucket, "", lifecyclekey, config)
+	if err != nil {
+		return fmt.Errorf("set lifecycle: %w", err)
+	}
+
+	return nil
+}
+
+func (p *Posix) GetBucketLifecycleConfiguration(ctx context.Context, bucket string) ([]byte, error) {
+	release, err := p.acquireActionSlot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	if !p.isBucketValid(bucket) {
+		return nil, s3err.GetBucketErr(s3err.ErrInvalidBucketName, bucket)
+	}
+	err = p.doesBucketExist(bucket)
+	if err != nil {
+		return nil, err
+	}
+
+	config, err := p.meta.RetrieveAttribute(nil, bucket, "", lifecyclekey)
+	if errors.Is(err, meta.ErrNoSuchKey) {
+		return nil, s3err.GetBucketErr(s3err.ErrNoSuchLifecycleConfiguration, bucket)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return config, nil
+}
+
+func (p *Posix) DeleteBucketLifecycle(ctx context.Context, bucket string) error {
+	if !p.isBucketValid(bucket) {
+		return s3err.GetBucketErr(s3err.ErrInvalidBucketName, bucket)
+	}
+	return p.PutBucketLifecycleConfiguration(ctx, bucket, nil)
 }
 
 func (p *Posix) PutBucketWebsite(ctx context.Context, bucket string, website []byte) (err error) {
